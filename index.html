@@ -317,11 +317,7 @@ function h2g(hY,hM,hD){
   return{d,m:j+2-12*l,y:100*(n-49)+ii+l};
 }
 function fmtDate(d,m,y){return d+' '+GM[m-1]+' '+y+'م';}
-function ramStyle(wd){
-  if(wd==='الجمعة'||wd==='الأحد') return 'animation:ramBlink 1.2s ease-in-out infinite;font-weight:700;border-radius:6px;padding:2px 8px';
-  if(wd) return 'background:rgba(102,187,106,.28);color:#a5d6a7;font-weight:700;border-radius:6px;padding:2px 8px';
-  return '';
-}
+function ramStyle(wd){ return ''; }
 function dayAR(d,m,y){return GD[new Date(y,m-1,d).getDay()];}
 
 async function apiConvert(hY,hM,hD){
@@ -636,9 +632,14 @@ async function calculate(){
     ${altHTML2}
 
     <div class="info-rows" id="info-rows">
-      <div class="info-row">
-        <span class="info-key">🗓 بداية رمضان</span>
-        <span class="info-val" id="info-ramadan" style="${ramStyle(ramadanStart.wd)}">${(ramadanStart.wd||'')+' '+fmtDate(ramadanStart.d,ramadanStart.m,ramadanStart.y)}</span>
+      <div class="info-row" style="flex-direction:column;gap:7px">
+        <div style="display:flex;justify-content:space-between;align-items:center;width:100%">
+          <span class="info-key">🗓 بداية رمضان</span>
+          <span class="info-val" id="info-ramadan" style="${ramStyle(ramadanStart.wd)}">${fmtDate(ramadanStart.d,ramadanStart.m,ramadanStart.y)}</span>
+        </div>
+        <div class="ram-inline" id="ram-inline-box">
+          ${buildRamInline(ramadanStart.wd)}
+        </div>
       </div>
       <div class="info-row">
         <span class="info-key">🔄 الدورة الثمانية</span>
@@ -654,14 +655,6 @@ async function calculate(){
       </div>` : ''}
     </div>
 
-    <div class="summary" id="summary-box">
-      <p>
-        ليلة القدر <strong>${hy} هـ</strong> هي ليلة
-        <strong class="big"> ${num} </strong> رمضان،
-        تبدأ مساء <strong>${eve.wd} ${fmtDate(eve.d,eve.m,eve.y)}</strong>
-        وتمتد حتى فجر <strong>${fmtDate(morn.d,morn.m,morn.y)}</strong>
-      </p>
-    </div>
     ${buildSourceCard(hy,src,inBook,inApiRange)}
   `;
   void res.offsetWidth;
@@ -691,6 +684,32 @@ async function calculate(){
   };
 }
 
+function buildRamInline(activeDay){
+  const days1=[['السبت',25],['الأحد',null],['الاثنين',23],['الثلاثاء',29]];
+  const days2=[['الأربعاء',21],['الخميس',27],['الجمعة',null]];
+  const render=(arr,sepLast)=>arr.map(([d,n],i)=>{
+    const isActive=activeDay===d, isImp=!n;
+    const isWarn=isActive&&isImp; // دخل في يوم مستحيل
+    let spanStyle, innerStyle;
+    if(isWarn){
+      // وميض أحمر/أصفر على اليوم المستحيل النشط
+      innerStyle='font-size:14px;font-family:\'Amiri\',serif;animation:dayBlink 1.2s ease-in-out infinite;font-weight:700';
+      spanStyle='opacity:1';
+    } else if(isActive){
+      innerStyle=`color:#ffd54f;font-size:14px;font-weight:700;font-family:'Amiri',serif`;
+      spanStyle='opacity:1';
+    } else if(isImp){
+      innerStyle=`color:rgba(255,255,255,.6);font-size:14px;font-family:'Amiri',serif`;
+      spanStyle='opacity:.6';
+    } else {
+      innerStyle=`color:#ffffff;font-size:14px;font-family:'Amiri',serif`;
+      spanStyle='opacity:1';
+    }
+    return (i>0?'<span class="ram-sep-bar">|</span>':'')+
+      `<span style="${spanStyle}"><span style="${innerStyle}">[${d} ${n||'—'}]</span></span>`;
+  }).join('');
+  return render(days1,false)+'<br/>'+render(days2,true);
+}
 let earlyMode = false;
 let altMode = false;
 function toggleAlt(){
@@ -707,7 +726,13 @@ function toggleAlt(){
   const data = altMode ? window._dataAlt2 : window._dataMain;
   if(!data) return;
   const infoRam = document.getElementById('info-ramadan');
-  if(infoRam){ infoRam.textContent=data.ramadan; infoRam.style.cssText=ramStyle(data.ramadan.split(' ')[0]); }
+  if(infoRam){
+    infoRam.textContent=data.ramadan.split(' ').slice(1).join(' ');
+    const wd=data.ramadan.split(' ')[0];
+    infoRam.style.cssText=ramStyle(wd);
+    const ramBox = document.getElementById('ram-inline-box');
+    if(ramBox) ramBox.innerHTML = buildRamInline(wd);
+  }
   const infoPat = document.getElementById('info-pattern');
   if(infoPat) infoPat.innerHTML = PATTERN.map((n,i)=>{ 
     const yr=data.hy+(i-data.patternIdx); 
@@ -719,8 +744,6 @@ function toggleAlt(){
     else style='color:rgba(255,255,255,.45)';
     return '<span style="'+style+'">'+n+'<sub style="font-size:9px;color:rgba(255,255,255,.3);margin-right:1px">'+yr+'</sub></span>'; 
   }).join('<span style="color:rgba(255,255,255,.2)"> · </span>');
-  const summ = document.getElementById('summary-box');
-  if(summ) summ.querySelector('p').innerHTML = data.summary;
 }
 function toggleEarly(){
   earlyMode = !earlyMode;
@@ -737,9 +760,11 @@ function toggleEarly(){
   if(!data) return;
   const infoRam = document.getElementById('info-ramadan');
   if(infoRam){
-    infoRam.textContent = data.ramadan;
+    infoRam.textContent = data.ramadan.split(' ').slice(1).join(' ');
     const wd = data.ramadan.split(' ')[0];
     infoRam.style.cssText = ramStyle(wd);
+    const ramBox = document.getElementById('ram-inline-box');
+    if(ramBox) ramBox.innerHTML = buildRamInline(wd);
   }
   const infoPat = document.getElementById('info-pattern');
   if(infoPat) infoPat.innerHTML = PATTERN.map((n,i)=>{ const yr=data.hy+(i-data.patternIdx); const active=i===data.patternIdx; return '<span style="'+(active?'color:#ffd54f;font-weight:700':'color:rgba(255,255,255,.45)')+'">'+n+'<sub style="font-size:9px;color:rgba(255,255,255,.3);margin-right:1px">'+yr+'</sub></span>'; }).join('<span style="color:rgba(255,255,255,.2)"> · </span>');
