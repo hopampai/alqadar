@@ -201,7 +201,6 @@
   .nebula2{position:fixed;bottom:10%;left:5%;width:250px;height:250px;border-radius:50%;
     background:radial-gradient(circle,rgba(0,160,140,.09) 0%,transparent 70%);pointer-events:none;z-index:0}
 </style>
-<script src="https://cdn.jsdelivr.net/npm/astronomy-engine@2.1.19/astronomy.min.js"></script>
 </head>
 <body>
 <div class="nebula1"></div>
@@ -709,51 +708,129 @@ async function calculate(){
 }
 
 
-// === حسابات القمر بمكتبة Astronomy Engine ===
+// === حسابات القمر — معادلات Jean Meeus (Astronomical Algorithms) ===
 
-function getMoonData(gDate, lat, lng) {
-  // وقت الغروب الشمسي (المغرب) لليوم المحدد
-  const date = new Date(Date.UTC(gDate.y, gDate.m - 1, gDate.d, 15, 0, 0));
-  const observer = new Astronomy.Observer(lat, lng, 0);
-  const astroTime = Astronomy.MakeTime(date);
+function toRad(d){ return d * Math.PI / 180; }
+function toJD(y, m, d){
+  if(m<=2){ y--; m+=12; }
+  const A=Math.floor(y/100), B=2-A+Math.floor(A/4);
+  return Math.floor(365.25*(y+4716))+Math.floor(30.6001*(m+1))+d+B-1524.5;
+}
 
-  // عمر القمر الحقيقي
-  const prevNew = Astronomy.SearchMoonPhase(0, astroTime, -35);
-  const ageDays = astroTime.ut - prevNew.ut;
+// عمر القمر الحقيقي (معادلة Meeus الفصل 49)
+function moonAgeFromJD(jd){
+  const k0 = (jd - 2451550.09765) / 29.530588853;
+  const k  = Math.floor(k0);
+  const T  = k / 1236.85;
+  const JDE0 = 2451550.09765
+    + 29.530588853 * k
+    + 0.0001337 * T*T
+    - 0.000000150 * T*T*T
+    + 0.00000000073 * T*T*T*T;
+  return (jd - JDE0 + 29.530588853) % 29.530588853;
+}
 
-  // الاستطالة الحقيقية (زاوية القمر - الشمس)
-  const moonEcl = Astronomy.EclipticLongitude(Astronomy.Body.Moon, astroTime);
-  const sunEcl  = Astronomy.EclipticLongitude(Astronomy.Body.Sun,  astroTime);
-  let elong = (moonEcl - sunEcl + 360) % 360;
+// الطول الإهليلجي للقمر والشمس (تقريب Meeus الفصل 22+47)
+function sunLongitude(jd){
+  const T=(jd-2451545.0)/36525;
+  const L0=280.46646+36000.76983*T;
+  const M=357.52911+35999.05029*T-0.0001537*T*T;
+  const mr=toRad(M%360);
+  const C=(1.914602-0.004817*T-0.000014*T*T)*Math.sin(mr)
+         +(0.019993-0.000101*T)*Math.sin(2*mr)
+         +0.000289*Math.sin(3*mr);
+  return (L0+C)%360;
+}
 
-  // مرحلة القمر من الاستطالة
+function moonLongitude(jd){
+  const T=(jd-2451545.0)/36525;
+  const Lp=218.3164477+481267.88123421*T;
+  const D=297.8501921+445267.1114034*T;
+  const M=357.5291092+35999.0502909*T;
+  const Mp=134.9633964+477198.8675055*T;
+  const F=93.2720950+483202.0175233*T;
+  const Lr=toRad; // shorthand
+  const lon=Lp
+    +6.288774*Math.sin(Lr(Mp))
+    +1.274027*Math.sin(Lr(2*D-Mp))
+    +0.658314*Math.sin(Lr(2*D))
+    +0.213618*Math.sin(Lr(2*Mp))
+    -0.185116*Math.sin(Lr(M))
+    -0.114332*Math.sin(Lr(2*F))
+    +0.058793*Math.sin(Lr(2*D-2*Mp))
+    +0.057066*Math.sin(Lr(2*D-M-Mp))
+    +0.053322*Math.sin(Lr(2*D+Mp))
+    +0.045758*Math.sin(Lr(2*D-M));
+  return ((lon%360)+360)%360;
+}
+
+// غروب الشمس والقمر — خوارزمية Meeus الفصل 15
+function riseSet(jd, lat, lng, body){
+  // body: 'sun' | 'moon'  — يعيد غروب اليوم بالساعة UTC
+  const T=(jd-2451545.0)/36525;
+  let h0 = body==='sun' ? -0.8333 : 0.125; // الارتفاع عند الأفق
+  // تقريب: نحسب الغروب من الطول + خطوط العرض
+  const sunLon = sunLongitude(jd);
+  const moonLon = moonLongitude(jd);
+  const lon = body==='sun' ? sunLon : moonLon;
+  // زاوية الغروب المبسطة: sunset ~ 18h ± (long - observer_lon)/15
+  // للموقع المحدد بدقة معقولة
+  const ra = lon; // تقريب: RA ≈ ecliptic lon عند الاعتدال
+  const dec = body==='sun'
+    ? 23.45*Math.sin(toRad((284+360*(jd-2451545)/365.25)))
+    : 5.1*Math.sin(toRad(lon));
+  const cosH = (Math.sin(toRad(h0))-Math.sin(toRad(lat))*Math.sin(toRad(dec)))
+               /(Math.cos(toRad(lat))*Math.cos(toRad(dec)));
+  if(Math.abs(cosH)>1) return null;
+  const H = Math.acos(cosH)*180/Math.PI; // نصف قوس النهار
+  // وقت العبور = 12 + (lng_west)/15 + تصحيح
+  const transit = 12 - lng/15 + (ra - 15*(jd-Math.floor(jd))*24)/15;
+  const set = (transit + H/15 + 24) % 24;
+  return set; // ساعات UTC
+}
+
+function getMoonData(gDate, lat, lng){
+  const jd = toJD(gDate.y, gDate.m, gDate.d + 0.5); // ظهر اليوم
+
+  // عمر القمر
+  const age = moonAgeFromJD(jd);
+
+  // الاستطالة الحقيقية (0–180°): زاوية القمر عن الشمس
+  const mLon = moonLongitude(jd);
+  const sLon = sunLongitude(jd);
+  let elong = ((mLon - sLon) + 360) % 360;
+  if(elong > 180) elong = 360 - elong; // تحويل لزاوية مطلقة
+
+  // مرحلة القمر من عمره (أدق من الاستطالة للتسمية)
+  const ageDays = age / 24; // تحويل من ساعات لأيام للمرحلة
   let phase;
-  if (elong < 12)       phase = '🌑 محاق';
-  else if (elong < 90)  phase = '🌒 هلال متزايد';
-  else if (elong < 100) phase = '🌓 تربيع أول';
-  else if (elong < 168) phase = '🌔 أحدب متزايد';
-  else if (elong < 192) phase = '🌕 بدر';
-  else if (elong < 270) phase = '🌖 أحدب متناقص';
-  else if (elong < 280) phase = '🌗 تربيع أخير';
-  else if (elong < 348) phase = '🌘 هلال متناقص';
-  else                  phase = '🌑 محاق';
+  if(ageDays < 1.5)       phase = '🌑 محاق';
+  else if(ageDays < 7.4)  phase = '🌒 هلال متزايد';
+  else if(ageDays < 8.5)  phase = '🌓 تربيع أول';
+  else if(ageDays < 13.5) phase = '🌔 أحدب متزايد';
+  else if(ageDays < 16.5) phase = '🌕 بدر';
+  else if(ageDays < 22)   phase = '🌖 أحدب متناقص';
+  else if(ageDays < 23)   phase = '🌗 تربيع أخير';
+  else if(ageDays < 28)   phase = '🌘 هلال متناقص';
+  else                     phase = '🌑 محاق';
 
-  // غروب الشمس وغروب القمر
+  // المكث = غروب القمر - غروب الشمس
   let stayStr = '—';
-  try {
-    const sunset  = Astronomy.SearchRiseSet(Astronomy.Body.Sun,  observer, -1, astroTime, 1, 0);
-    const moonset = Astronomy.SearchRiseSet(Astronomy.Body.Moon, observer, -1, astroTime, 1, 0);
-    if (sunset && moonset) {
-      const diffMins = Math.round((moonset.ut - sunset.ut) * 24 * 60);
-      if (diffMins > 0 && diffMins < 600) {
-        const h = Math.floor(diffMins / 60), m = diffMins % 60;
-        stayStr = h > 0 ? `${h}س ${m}د` : `${m}د`;
+  try{
+    const ss = riseSet(jd, lat, lng, 'sun');
+    const ms = riseSet(jd, lat, lng, 'moon');
+    if(ss!==null && ms!==null){
+      let diffMins = Math.round((ms - ss) * 60);
+      if(diffMins < 0) diffMins += 24*60;
+      if(diffMins > 0 && diffMins < 600){
+        const h=Math.floor(diffMins/60), m=diffMins%60;
+        stayStr = h>0 ? `${h}س ${m}د` : `${m}د`;
       }
     }
-  } catch(e) {}
+  }catch(e){}
 
   return {
-    age: ageDays.toFixed(1),
+    age: Math.round(age * 24),  // بالساعات
     elong: elong.toFixed(1),
     phase,
     stay: stayStr
@@ -790,9 +867,9 @@ async function fetchMoonData(gDate){
   }
   box.innerHTML = '<div class="moon-loading">⟳ جاري حساب بيانات القمر…</div>';
   const loc = await getUserLocation();
-  const lat = loc ? loc.lat : 24.7136;
-  const lng = loc ? loc.lng : 46.6753;
-  const locLabel = loc ? `${lat.toFixed(2)}°, ${lng.toFixed(2)}°` : 'الرياض (افتراضي)';
+  const lat = loc ? loc.lat : 28.3835;
+  const lng = loc ? loc.lng : 36.5662;
+  const locLabel = loc ? `${lat.toFixed(2)}°, ${lng.toFixed(2)}°` : 'تبوك (افتراضي)';
   let moonInfo;
   try {
     moonInfo = getMoonData(gDate, lat, lng);
@@ -811,7 +888,7 @@ async function fetchMoonData(gDate){
       <div class="moon-cell">
         <div class="moon-lbl">عمر القمر</div>
         <div class="moon-num">${age}</div>
-        <div class="moon-unit">يوم</div>
+        <div class="moon-unit">ساعة</div>
       </div>
       <div class="moon-cell">
         <div class="moon-lbl">المكث (تقريبي)</div>
