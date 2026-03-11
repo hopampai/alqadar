@@ -201,6 +201,7 @@
   .nebula2{position:fixed;bottom:10%;left:5%;width:250px;height:250px;border-radius:50%;
     background:radial-gradient(circle,rgba(0,160,140,.09) 0%,transparent 70%);pointer-events:none;z-index:0}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/astronomy-engine@2.1.19/astronomy.min.js"></script>
 </head>
 <body>
 <div class="nebula1"></div>
@@ -708,27 +709,55 @@ async function calculate(){
 }
 
 
-// حساب بيانات القمر محلياً بالكامل (بدون API خارجي)
-function moonAge(dateObj){
-  const refNew = new Date(2000,0,6,18,14,0).getTime();
-  const lunation = 29.53058867 * 86400000;
-  const diff = dateObj.getTime() - refNew;
-  return ((diff % lunation) + lunation) % lunation / 86400000;
-}
+// === حسابات القمر بمكتبة Astronomy Engine ===
 
-function moonElongation(ageDays){
-  // الاستطالة = زاوية القمر عن الشمس
-  return parseFloat(((ageDays / 29.53058867) * 360 % 360).toFixed(1));
-}
+function getMoonData(gDate, lat, lng) {
+  // وقت الغروب الشمسي (المغرب) لليوم المحدد
+  const date = new Date(Date.UTC(gDate.y, gDate.m - 1, gDate.d, 15, 0, 0));
+  const observer = new Astronomy.Observer(lat, lng, 0);
+  const astroTime = Astronomy.MakeTime(date);
 
-function calcMoonStay(lat, lng, dateObj){
-  // تقريب مبسط: المكث = 50 دقيقة × cos(elongation) + متوسط ثابت
-  // المكث الفلكي الحقيقي يحتاج ephemeris - نستخدم تقريب خطي
-  const age = moonAge(dateObj);
-  // في اليوم الأول: مكث قصير ~20 دق، يزيد مع العمر
-  const mins = Math.round(20 + age * (200/29.53));
-  const h = Math.floor(mins/60), m = mins%60;
-  return h>0 ? `${h}س ${m}د` : `${m}د`;
+  // عمر القمر الحقيقي
+  const prevNew = Astronomy.SearchMoonPhase(0, astroTime, -35);
+  const ageDays = astroTime.ut - prevNew.ut;
+
+  // الاستطالة الحقيقية (زاوية القمر - الشمس)
+  const moonEcl = Astronomy.EclipticLongitude(Astronomy.Body.Moon, astroTime);
+  const sunEcl  = Astronomy.EclipticLongitude(Astronomy.Body.Sun,  astroTime);
+  let elong = (moonEcl - sunEcl + 360) % 360;
+
+  // مرحلة القمر من الاستطالة
+  let phase;
+  if (elong < 12)       phase = '🌑 محاق';
+  else if (elong < 90)  phase = '🌒 هلال متزايد';
+  else if (elong < 100) phase = '🌓 تربيع أول';
+  else if (elong < 168) phase = '🌔 أحدب متزايد';
+  else if (elong < 192) phase = '🌕 بدر';
+  else if (elong < 270) phase = '🌖 أحدب متناقص';
+  else if (elong < 280) phase = '🌗 تربيع أخير';
+  else if (elong < 348) phase = '🌘 هلال متناقص';
+  else                  phase = '🌑 محاق';
+
+  // غروب الشمس وغروب القمر
+  let stayStr = '—';
+  try {
+    const sunset  = Astronomy.SearchRiseSet(Astronomy.Body.Sun,  observer, -1, astroTime, 1, 0);
+    const moonset = Astronomy.SearchRiseSet(Astronomy.Body.Moon, observer, -1, astroTime, 1, 0);
+    if (sunset && moonset) {
+      const diffMins = Math.round((moonset.ut - sunset.ut) * 24 * 60);
+      if (diffMins > 0 && diffMins < 600) {
+        const h = Math.floor(diffMins / 60), m = diffMins % 60;
+        stayStr = h > 0 ? `${h}س ${m}د` : `${m}د`;
+      }
+    }
+  } catch(e) {}
+
+  return {
+    age: ageDays.toFixed(1),
+    elong: elong.toFixed(1),
+    phase,
+    stay: stayStr
+  };
 }
 
 let _userLat = null, _userLng = null;
@@ -761,20 +790,17 @@ async function fetchMoonData(gDate){
   }
   box.innerHTML = '<div class="moon-loading">⟳ جاري حساب بيانات القمر…</div>';
   const loc = await getUserLocation();
-  const locLabel = loc ? `${loc.lat.toFixed(2)}°, ${loc.lng.toFixed(2)}°` : 'الرياض (افتراضي)';
-  const dateObj = new Date(gDate.y, gDate.m-1, gDate.d, 19, 0, 0); // عند المغرب تقريباً
-  const age = moonAge(dateObj);
-  const elong = moonElongation(age);
-  const stay = calcMoonStay(loc?loc.lat:24.7, loc?loc.lng:46.7, dateObj);
-  // تحديد المرحلة
-  let phase = '';
-  if(age < 1.5) phase = '🌑 محاق';
-  else if(age < 7.4) phase = '🌒 هلال متزايد';
-  else if(age < 14.8) phase = '🌓 تربيع أول';
-  else if(age < 16) phase = '🌕 بدر';
-  else if(age < 22.1) phase = '🌖 أحدب';
-  else if(age < 29) phase = '🌘 هلال متناقص';
-  else phase = '🌑 محاق';
+  const lat = loc ? loc.lat : 24.7136;
+  const lng = loc ? loc.lng : 46.6753;
+  const locLabel = loc ? `${lat.toFixed(2)}°, ${lng.toFixed(2)}°` : 'الرياض (افتراضي)';
+  let moonInfo;
+  try {
+    moonInfo = getMoonData(gDate, lat, lng);
+  } catch(e) {
+    box.innerHTML = `<div class="moon-err">تعذّر حساب بيانات القمر: ${e.message}</div>`;
+    return;
+  }
+  const { age, elong, phase, stay } = moonInfo;
 
   box.innerHTML=`
     <div class="moon-card-hdr">
@@ -784,7 +810,7 @@ async function fetchMoonData(gDate){
     <div class="moon-grid">
       <div class="moon-cell">
         <div class="moon-lbl">عمر القمر</div>
-        <div class="moon-num">${age.toFixed(1)}</div>
+        <div class="moon-num">${age}</div>
         <div class="moon-unit">يوم</div>
       </div>
       <div class="moon-cell">
