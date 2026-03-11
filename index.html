@@ -109,6 +109,21 @@
     50%{color:#ffd54f;text-shadow:0 0 8px rgba(255,213,79,.9);}
   }
   .dname.day-warn{animation:dayBlink 1.2s ease-in-out infinite;font-weight:700;}
+
+  /* بطاقة القمر */
+  .moon-card{border-radius:14px;border:1px solid rgba(144,202,249,.2);margin-bottom:12px;overflow:hidden;background:rgba(144,202,249,.05)}
+  .moon-card-hdr{padding:8px 14px;background:rgba(144,202,249,.08);border-bottom:1px solid rgba(144,202,249,.12);
+    display:flex;align-items:center;justify-content:space-between}
+  .moon-card-title{font-size:12px;color:#90caf9;font-family:sans-serif}
+  .moon-card-date{font-size:10px;color:rgba(255,255,255,.4);font-family:sans-serif}
+  .moon-grid{display:grid;grid-template-columns:1fr 1fr 1fr}
+  .moon-cell{padding:12px 8px;text-align:center;border-left:1px solid rgba(255,255,255,.06)}
+  .moon-cell:last-child{border-left:none}
+  .moon-lbl{font-size:11px;color:rgba(255,255,255,.5);font-family:sans-serif;margin-bottom:5px}
+  .moon-num{font-size:18px;font-weight:700;color:#ffffff;font-family:'Amiri',serif}
+  .moon-unit{font-size:10px;color:rgba(255,255,255,.4);font-family:sans-serif;margin-top:3px}
+  .moon-loading{padding:14px;text-align:center;color:rgba(255,255,255,.4);font-size:12px;font-family:sans-serif}
+  .moon-err{padding:10px;text-align:center;color:rgba(255,100,100,.6);font-size:11px;font-family:sans-serif}
   .moon-sep{width:30px;height:30px;border-radius:50%;background:rgba(218,165,32,.15);
     border:1px solid rgba(218,165,32,.3);display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;}
   .info-rows{border-radius:14px;overflow:hidden;border:1px solid rgba(255,255,255,.07);margin-bottom:12px}
@@ -257,8 +272,8 @@
     <span class="toggle-label">تعثر رؤية الهلال، احتمال آخر لليلة قدر وترية</span>
   </div>
 
-  <div id="result" style="display:none"></div>
   <div class="moon-card" id="moon-card-box" style="display:none"></div>
+  <div id="result" style="display:none"></div>
 </div>
 
 <footer>بناءً على كتاب: ليلة القدر المسمى والتنقل · عبدالله بن عويض المطرفي · أم القرى ١٤٣٥هـ</footer>
@@ -664,9 +679,11 @@ async function calculate(){
   window._boxMain = document.getElementById('box-main');
   window._ramadanStartMain = ramadanStart;
   window._ramadanStart2 = ramadanStart2;
-  const moonBox = document.getElementById('moon-card-box');
-  if(moonBox){ moonBox.style.display=''; moonBox.innerHTML='<div class="moon-loading">⟳ جاري تحديد الموقع…</div>'; }
-  setTimeout(()=>fetchMoonData(ramadanStart, ramadanStart.wd), 0);
+  window._moonDateMain = prevDay(ramadanStart);
+  window._moonDate2    = ramadanStart;  // آخر يوم شعبان في سيناريو التأخير
+  const _mcBox = document.getElementById('moon-card-box');
+  if(_mcBox){ _mcBox.style.display=''; _mcBox.innerHTML='<div class="moon-loading">⟳ جاري الحساب…</div>'; }
+  setTimeout(()=>fetchMoonData(window._moonDateMain), 50);
   window._boxAlt  = document.getElementById('box-alt');
   window._boxAlt2 = document.getElementById('box-alt2');
   document.getElementById('altToggle').style.display = alt2 ? 'flex' : 'none';
@@ -691,24 +708,30 @@ async function calculate(){
 }
 
 
-const MOON_API_KEY = 'f4516a7b6a954298ad511feef8cfcc69';
-
-// حساب عمر القمر بالأيام (منذ آخر محاق)
+// حساب بيانات القمر محلياً بالكامل (بدون API خارجي)
 function moonAge(dateObj){
-  // محاق مرجعي معروف: 2000-01-06
-  const refNew = new Date(2000,0,6).getTime();
-  const lunation = 29.53058867;
-  const diff = (dateObj.getTime() - refNew) / 86400000;
-  return ((diff % lunation) + lunation) % lunation;
+  const refNew = new Date(2000,0,6,18,14,0).getTime();
+  const lunation = 29.53058867 * 86400000;
+  const diff = dateObj.getTime() - refNew;
+  return ((diff % lunation) + lunation) % lunation / 86400000;
 }
 
-// حساب الاستطالة التقريبية من عمر القمر (بالدرجات)
 function moonElongation(ageDays){
-  return Math.round((ageDays / 29.53) * 360 * 10) / 10;
+  // الاستطالة = زاوية القمر عن الشمس
+  return parseFloat(((ageDays / 29.53058867) * 360 % 360).toFixed(1));
 }
 
-// حفظ الإحداثيات بعد أول طلب
-let _userLat = null, _userLng = null, _userCity = null;
+function calcMoonStay(lat, lng, dateObj){
+  // تقريب مبسط: المكث = 50 دقيقة × cos(elongation) + متوسط ثابت
+  // المكث الفلكي الحقيقي يحتاج ephemeris - نستخدم تقريب خطي
+  const age = moonAge(dateObj);
+  // في اليوم الأول: مكث قصير ~20 دق، يزيد مع العمر
+  const mins = Math.round(20 + age * (200/29.53));
+  const h = Math.floor(mins/60), m = mins%60;
+  return h>0 ? `${h}س ${m}د` : `${m}د`;
+}
+
+let _userLat = null, _userLng = null;
 
 async function getUserLocation(){
   if(_userLat !== null) return {lat:_userLat, lng:_userLng};
@@ -722,68 +745,61 @@ async function getUserLocation(){
   });
 }
 
-async function fetchMoonData(gDate, ramWd){
-  const box = document.getElementById('moon-card-box');
+
+// اليوم السابق لتاريخ ميلادي
+function prevDay(gDate){
+  const dt = new Date(gDate.y, gDate.m-1, gDate.d);
+  dt.setDate(dt.getDate()-1);
+  return {d:dt.getDate(), m:dt.getMonth()+1, y:dt.getFullYear(), wd:GD[dt.getDay()]};
+}
+async function fetchMoonData(gDate){
+  const box = document.getElementById('moon-card-box') || document.querySelector('.moon-card');
   if(!box) return;
-  if(!gDate || gDate.y < 1900 || gDate.y > 2100){
+  if(!gDate || gDate.y < 1000 || gDate.y > 2200){
     box.innerHTML = '<div class="moon-err">بيانات القمر غير متاحة لهذا التاريخ</div>';
     return;
   }
-  box.innerHTML = '<div class="moon-loading">⟳ جاري تحديد الموقع…</div>';
+  box.innerHTML = '<div class="moon-loading">⟳ جاري حساب بيانات القمر…</div>';
   const loc = await getUserLocation();
-  const lat = loc ? loc.lat : 24.7136;
-  const lng = loc ? loc.lng : 46.6753;
-  const locLabel = _userCity || (loc ? `${lat.toFixed(2)}, ${lng.toFixed(2)}` : 'الرياض (افتراضي)');
-  box.innerHTML = '<div class="moon-loading">⟳ جاري تحميل بيانات القمر…</div>';
-  const dd=String(gDate.d).padStart(2,'0'), mm=String(gDate.m).padStart(2,'0');
-  const dateStr=`${gDate.y}-${mm}-${dd}`;
-  const url=`https://api.ipgeolocation.io/astronomy?apiKey=${MOON_API_KEY}&lat=${lat}&long=${lng}&date=${dateStr}`;
-  try{
-    const res = await fetch(url);
-    if(!res.ok) throw new Error('HTTP '+res.status);
-    const data = await res.json();
-    if(data.message) throw new Error(data.message);
-    const a = data.astronomy;
-    // حساب عمر القمر والاستطالة
-    const dateObj = new Date(gDate.y, gDate.m-1, gDate.d);
-    const age = moonAge(dateObj);
-    const elong = moonElongation(age);
-    // المكث = moonset - moonrise (بالدقائق)
-    let stayStr = '—';
-    if(a.moonrise && a.moonset && a.moonrise!=='-:-' && a.moonset!=='-:-'){
-      const [rh,rm]=a.moonrise.split(':').map(Number);
-      const [sh,sm]=a.moonset.split(':').map(Number);
-      let mins=(sh*60+sm)-(rh*60+rm);
-      if(mins<0) mins+=24*60;
-      const hh=Math.floor(mins/60), mn=mins%60;
-      stayStr=`${hh}س ${mn}د`;
-    }
-    box.innerHTML=`
-      <div class="moon-card-hdr">
-        <span class="moon-card-title">🌙 بيانات القمر · ${ramWd||''} ${gDate.d}/${gDate.m}/${gDate.y}</span>
-        <span class="moon-card-date">${locLabel}</span>
+  const locLabel = loc ? `${loc.lat.toFixed(2)}°, ${loc.lng.toFixed(2)}°` : 'الرياض (افتراضي)';
+  const dateObj = new Date(gDate.y, gDate.m-1, gDate.d, 19, 0, 0); // عند المغرب تقريباً
+  const age = moonAge(dateObj);
+  const elong = moonElongation(age);
+  const stay = calcMoonStay(loc?loc.lat:24.7, loc?loc.lng:46.7, dateObj);
+  // تحديد المرحلة
+  let phase = '';
+  if(age < 1.5) phase = '🌑 محاق';
+  else if(age < 7.4) phase = '🌒 هلال متزايد';
+  else if(age < 14.8) phase = '🌓 تربيع أول';
+  else if(age < 16) phase = '🌕 بدر';
+  else if(age < 22.1) phase = '🌖 أحدب';
+  else if(age < 29) phase = '🌘 هلال متناقص';
+  else phase = '🌑 محاق';
+
+  box.innerHTML=`
+    <div class="moon-card-hdr">
+      <span class="moon-card-title">🌙 هلال رمضان · ${gDate.d}/${gDate.m}/${gDate.y}</span>
+      <span class="moon-card-date">${locLabel}</span>
+    </div>
+    <div class="moon-grid">
+      <div class="moon-cell">
+        <div class="moon-lbl">عمر القمر</div>
+        <div class="moon-num">${age.toFixed(1)}</div>
+        <div class="moon-unit">يوم</div>
       </div>
-      <div class="moon-grid">
-        <div class="moon-cell">
-          <div class="moon-lbl">عمر القمر</div>
-          <div class="moon-num">${age.toFixed(1)}</div>
-          <div class="moon-unit">يوم</div>
-        </div>
-        <div class="moon-cell">
-          <div class="moon-lbl">المكث</div>
-          <div class="moon-num">${stayStr}</div>
-          <div class="moon-unit">مكث الهلال</div>
-        </div>
-        <div class="moon-cell">
-          <div class="moon-lbl">الاستطالة</div>
-          <div class="moon-num">${elong}°</div>
-          <div class="moon-unit">تقريبي</div>
-        </div>
-      </div>`;
-  } catch(e){
-    box.innerHTML=`<div class="moon-err">تعذّر تحميل بيانات القمر</div>`;
-  }
+      <div class="moon-cell">
+        <div class="moon-lbl">المكث (تقريبي)</div>
+        <div class="moon-num">${stay}</div>
+        <div class="moon-unit">بعد الغروب</div>
+      </div>
+      <div class="moon-cell">
+        <div class="moon-lbl">الاستطالة</div>
+        <div class="moon-num">${elong}°</div>
+        <div class="moon-unit">${phase}</div>
+      </div>
+    </div>`;
 }
+
 
 function buildRamInline(activeDay){
   const days1=[['السبت',25],['الأحد',null],['الاثنين',23],['الثلاثاء',29]];
@@ -835,8 +851,8 @@ function toggleAlt(){
     if(ramBox) ramBox.innerHTML = buildRamInline(wd);
   }
   // تحديث بيانات القمر
-  const _md = earlyMode ? window._ramadanStart2 : window._ramadanStartMain;
-  if(_md) setTimeout(()=>fetchMoonData(_md, _md.wd), 0);
+  const _moonD = altMode ? window._moonDate2 : window._moonDateMain;
+  if(_moonD) setTimeout(()=>fetchMoonData(_moonD), 0);
   const infoPat = document.getElementById('info-pattern');
   if(infoPat) infoPat.innerHTML = PATTERN.map((n,i)=>{ 
     const yr=data.hy+(i-data.patternIdx); 
@@ -870,12 +886,13 @@ function toggleEarly(){
     const ramBox = document.getElementById('ram-inline-box');
     if(ramBox) ramBox.innerHTML = buildRamInline(wd);
   }
+  // تحديث كرت القمر
+  const _moonDE = earlyMode ? window._moonDate2 : window._moonDateMain;
+  if(_moonDE) setTimeout(()=>fetchMoonData(_moonDE), 0);
   const infoPat = document.getElementById('info-pattern');
   if(infoPat) infoPat.innerHTML = PATTERN.map((n,i)=>{ const yr=data.hy+(i-data.patternIdx); const active=i===data.patternIdx; return '<span style="'+(active?'color:#ffd54f;font-weight:700':'color:rgba(255,255,255,.45)')+'">'+n+'<sub style="font-size:9px;color:rgba(255,255,255,.3);margin-right:1px">'+yr+'</sub></span>'; }).join('<span style="color:rgba(255,255,255,.2)"> · </span>');
   const infoPatPrev = document.getElementById('info-pattern-prev');
   if(infoPatPrev && data.showPrev) infoPatPrev.textContent = 'ليلة ' + PATTERN[7];
-  const summ = document.getElementById('summary-box');
-  if(summ) summ.querySelector('p').innerHTML = data.summary;
 }
 
 document.getElementById('yearInput').addEventListener('input', () => {
