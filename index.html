@@ -295,7 +295,6 @@
   </div>
 
   <div class="moon-card" id="moon-card-box" style="display:none"></div>
-  <div class="eid-cards" id="eid-cards-box" style="display:none"></div>
   <div id="result" style="display:none"></div>
 </div>
 
@@ -669,6 +668,7 @@ async function calculate(){
     </div>
     ${altHTML}
     ${altHTML2}
+    <div class="eid-cards" id="eid-cards-box"></div>
 
     <div class="info-rows" id="info-rows">
       <div class="info-row">
@@ -703,8 +703,6 @@ async function calculate(){
   window._ramadanStartMain = ramadanStart;
   window._ramadanStart2 = ramadanStart2;
   // إظهار وتحديث بطاقة العيدين
-  const eidBox = document.getElementById('eid-cards-box');
-  if(eidBox) eidBox.style.display='';
   buildEidCards(hy, src, inApiRange);
   window._moonDateMain = prevDay(ramadanStart);
   window._moonDate2    = ramadanStart;  // آخر يوم شعبان في سيناريو التأخير
