@@ -225,6 +225,7 @@
   .nebula2{position:fixed;bottom:10%;left:5%;width:250px;height:250px;border-radius:50%;
     background:radial-gradient(circle,rgba(0,160,140,.09) 0%,transparent 70%);pointer-events:none;z-index:0}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/astronomy-engine@2.1.19/astronomy.min.js"></script>
 </head>
 <body>
 <div class="nebula1"></div>
@@ -801,52 +802,56 @@ var SC=(function(){
 })();
 // ===== نهاية SunCalc =====
 
-// === حسابات القمر — SunCalc للاستطالة والمكث، Meeus لعمر الهلال ===
-function toJD(y,m,d){if(m<=2){y--;m+=12;}var A=Math.floor(y/100),B=2-A+Math.floor(A/4);return Math.floor(365.25*(y+4716))+Math.floor(30.6001*(m+1))+d+B-1524.5;}
+// === حسابات القمر — Astronomy Engine (VSOP87 دقة ±1 دقيقة قوسية) ===
+function toJD_m(y,m,d){if(m<=2){y--;m+=12;}var A=Math.floor(y/100),B=2-A+Math.floor(A/4);return Math.floor(365.25*(y+4716))+Math.floor(30.6001*(m+1))+d+B-1524.5;}
 function moonAgeFromJD(jd){var k0=(jd-2451550.09765)/29.530588853,k=Math.floor(k0),T=k/1236.85,JDE0=2451550.09765+29.530588853*k+0.0001337*T*T-0.00000015*T*T*T;return(jd-JDE0+29.530588853)%29.530588853;}
+
 function getMoonData(gDate, lat, lng){
   var date = new Date(Date.UTC(gDate.y, gDate.m-1, gDate.d, 12, 0, 0));
-  // عمر الهلال من Meeus
-  var jd = toJD(gDate.y, gDate.m, gDate.d + 0.5);
+  var observer = new Astronomy.Observer(lat, lng, 0);
+  var astroTime = Astronomy.MakeTime(date);
+
+  // عمر الهلال من Meeus (الأدق)
+  var jd = toJD_m(gDate.y, gDate.m, gDate.d + 0.5);
   var ageDays = moonAgeFromJD(jd);
   var ageHours = Math.round(ageDays * 24);
-  // الاستطالة من SunCalc
-  var illum = SC.getMoonIllumination(date);
-  var mp = illum.phase;
-  var frac = illum.fraction;
-  var elongDeg = Math.acos(Math.max(-1,Math.min(1,1-2*frac)))*180/Math.PI;
+
+  // الاستطالة الحقيقية من Astronomy Engine
+  var moonPos = Astronomy.GeoMoon(astroTime);
+  var sunPos  = Astronomy.SunPosition(astroTime);
+  var moonEcl = Astronomy.EclipticLongitude(Astronomy.Body.Moon, astroTime);
+  var sunEcl  = Astronomy.EclipticLongitude(Astronomy.Body.Sun,  astroTime);
+  var elongRaw = ((moonEcl - sunEcl) % 360 + 360) % 360;
+  var elongDeg = elongRaw > 180 ? 360 - elongRaw : elongRaw;
   var elong = elongDeg.toFixed(1);
+
+  // مرحلة القمر من العمر
   var phase;
-  if(mp<.03||mp>.97)       phase='🌑 محاق';
-  else if(mp<.22)           phase='🌒 هلال متزايد';
-  else if(mp<.28)           phase='🌓 تربيع أول';
-  else if(mp<.47)           phase='🌔 أحدب متزايد';
-  else if(mp<.53)           phase='🌕 بدر';
-  else if(mp<.72)           phase='🌖 أحدب متناقص';
-  else if(mp<.78)           phase='🌗 تربيع أخير';
-  else                      phase='🌘 هلال متناقص';
-  var stayStr='—';
+  if(ageDays<1.5)       phase='🌑 محاق';
+  else if(ageDays<7.4)  phase='🌒 هلال متزايد';
+  else if(ageDays<8.5)  phase='🌓 تربيع أول';
+  else if(ageDays<13.5) phase='🌔 أحدب متزايد';
+  else if(ageDays<16.5) phase='🌕 بدر';
+  else if(ageDays<22)   phase='🌖 أحدب متناقص';
+  else if(ageDays<23)   phase='🌗 تربيع أخير';
+  else if(ageDays<28)   phase='🌘 هلال متناقص';
+  else                   phase='🌑 محاق';
+
+  // المكث = غروب القمر - غروب الشمس من Astronomy Engine
+  var stayStr = '—';
   try{
-    var sunT=SC.getTimes(date,lat,lng);
-    var ss=sunT.sunset;
-    if(ss){
-      // ابحث عن غروب القمر بعد الغروب الشمسي مباشرة (فحص كل 30 دقيقة)
-      var prevAlt=SC.getMoonPosition(ss,lat,lng).altitude;
-      for(var step=1;step<=18;step++){
-        var t2=new Date(+ss+step*1800000);
-        var alt2=SC.getMoonPosition(t2,lat,lng).altitude;
-        if(prevAlt>0&&alt2<=0){
-          // غروب القمر بين t2-30دق وt2
-          var mset=new Date(+ss+(step-.5)*1800000);
-          var diff=Math.round((mset-ss)/60000);
-          if(diff>0&&diff<600){var h=Math.floor(diff/60),m=diff%60;stayStr=h>0?h+'س '+m+'د':m+'د';}
-          break;
-        }
-        prevAlt=alt2;
+    var sunset  = Astronomy.SearchRiseSet(Astronomy.Body.Sun,  observer, -1, astroTime, 1);
+    var moonset = Astronomy.SearchRiseSet(Astronomy.Body.Moon, observer, -1, astroTime, 1);
+    if(sunset && moonset){
+      var diffMins = Math.round((moonset.date - sunset.date) / 60000);
+      if(diffMins > 0 && diffMins < 600){
+        var h=Math.floor(diffMins/60), m=diffMins%60;
+        stayStr = h>0 ? h+'س '+m+'د' : m+'د';
       }
     }
   }catch(e){}
-  return{age:ageHours,elong,phase,stay:stayStr};
+
+  return{age:ageHours, elong, phase, stay:stayStr};
 }
 
 let _userLat = null, _userLng = null;
