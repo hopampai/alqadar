@@ -735,90 +735,118 @@ async function calculate(){
 }
 
 
-// === حسابات القمر — USNO API + Meeus للعمر ===
-
-// عمر القمر من Meeus (USNO لا يعطيه مباشرة)
-function toJD(y,m,d){ if(m<=2){y--;m+=12;} const A=Math.floor(y/100),B=2-A+Math.floor(A/4); return Math.floor(365.25*(y+4716))+Math.floor(30.6001*(m+1))+d+B-1524.5; }
-function moonAgeFromJD(jd){ const k0=(jd-2451550.09765)/29.530588853; const k=Math.floor(k0); const T=k/1236.85; const JDE0=2451550.09765+29.530588853*k+0.0001337*T*T; return (jd-JDE0+29.530588853)%29.530588853; }
-
-async function getMoonData(gDate, lat, lng){
-  const dd=String(gDate.d).padStart(2,'0'), mm=String(gDate.m).padStart(2,'0');
-  const dateStr=`${gDate.y}-${mm}-${dd}`;
-  // تحديد المنطقة الزمنية من خط الطول
-  const tz = Math.round(lng / 15);
-  const url = `https://aa.usno.navy.mil/api/rstt/oneday?date=${dateStr}&coords=${lat.toFixed(4)},${lng.toFixed(4)}&tz=${tz}&ID=layla`;
-
-  // عمر القمر (محلي)
-  const jd = toJD(gDate.y, gDate.m, gDate.d + 0.5);
-  const ageDays = moonAgeFromJD(jd);
-  const ageHours = Math.round(ageDays * 24);
-
-  // مرحلة القمر من العمر
-  let phase;
-  if(ageDays < 1.5)       phase = '🌑 محاق';
-  else if(ageDays < 7.4)  phase = '🌒 هلال متزايد';
-  else if(ageDays < 8.5)  phase = '🌓 تربيع أول';
-  else if(ageDays < 13.5) phase = '🌔 أحدب متزايد';
-  else if(ageDays < 16.5) phase = '🌕 بدر';
-  else if(ageDays < 22)   phase = '🌖 أحدب متناقص';
-  else if(ageDays < 23)   phase = '🌗 تربيع أخير';
-  else if(ageDays < 28)   phase = '🌘 هلال متناقص';
-  else                     phase = '🌑 محاق';
-
-  let elong = '—', stayStr = '—';
-
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(()=>ctrl.abort(), 8000);
-    const res = await fetch(url, {signal: ctrl.signal});
-    clearTimeout(timer);
-    if(!res.ok) throw new Error('HTTP '+res.status);
-    const data = await res.json();
-    const d = data.properties.data;
-
-    // الاستطالة من نسبة الإضاءة: fracillum = (1 - cos(elong)) / 2
-    if(d.fracillum){
-      const frac = parseFloat(d.fracillum) / 100;
-      const elongRad = Math.acos(1 - 2 * frac);
-      // إذا القمر متناقص (عمر > 14.75) نعكس الإشارة للمفهوم
-      const elongDeg = elongRad * 180 / Math.PI;
-      elong = elongDeg.toFixed(1);
-    }
-
-    // المكث = غروب القمر - غروب الشمس
-    const parseTime = t => {
-      if(!t) return null;
-      const [h,m] = t.split(':').map(Number);
-      return h*60+m;
-    };
-    const moonSet = d.moondata?.find(x=>x.phen==='S');
-    const sunSet  = d.sundata?.find(x=>x.phen==='S');
-    if(moonSet && sunSet){
-      const ms = parseTime(moonSet.time);
-      const ss = parseTime(sunSet.time);
-      if(ms !== null && ss !== null){
-        let diff = ms - ss;
-        if(diff < 0) diff += 24*60;
-        if(diff > 0 && diff < 600){
-          const h=Math.floor(diff/60), m=diff%60;
-          stayStr = h>0 ? `${h}س ${m}د` : `${m}د`;
-        }
-      }
-    }
-  } catch(e){
-    // fallback: SunCalc محلي عند فشل API
-    try {
-      const SC_date = new Date(Date.UTC(gDate.y, gDate.m-1, gDate.d, 15, 0, 0));
-      const mi = SunCalc ? SunCalc.getMoonIllumination(SC_date) : null;
-      if(mi){
-        const frac = mi.fraction;
-        const elongDeg = Math.acos(1-2*frac)*180/Math.PI;
-        elong = elongDeg.toFixed(1);
-      }
-    } catch(e2){}
+// ===== SunCalc مدمج — Vladimir Agafonkin (BSD License) =====
+var SC=(function(){
+  var PI=Math.PI,sin=Math.sin,cos=Math.cos,tan=Math.tan,asin=Math.asin,atan=Math.atan2,acos=Math.acos,rad=PI/180;
+  var dayMs=864e5,J1970=2440588,J2000=2451545,e=rad*23.4397;
+  function toJ(d){return d/dayMs-.5+J1970;}
+  function fromJ(j){return new Date((j+.5-J1970)*dayMs);}
+  function toDays(d){return toJ(d)-J2000;}
+  function ra(l,b){return atan(sin(l)*cos(e)-tan(b)*sin(e),cos(l));}
+  function dec(l,b){return asin(sin(b)*cos(e)+cos(b)*sin(e)*sin(l));}
+  function sTime(d,lw){return rad*(280.16+360.9856235*d)-lw;}
+  function aRef(h){if(h<0)h=0;return .0002967/Math.tan(h+.00312536/(h+.08901179));}
+  function sMA(d){return rad*(357.5291+.98560028*d);}
+  function eLon(M){var C=rad*(1.9148*sin(M)+.02*sin(2*M)+.0003*sin(3*M));return M+C+rad*102.9372+PI;}
+  function sunC(d){var M=sMA(d),L=eLon(M);return{dec:dec(L,0),ra:ra(L,0)};}
+  function moonC(d){
+    var L=rad*(218.316+13.176396*d),M=rad*(134.963+13.064993*d),F=rad*(93.272+13.22935*d);
+    var l=L+rad*6.289*sin(M),b=rad*5.128*sin(F),dt=385001-20905*cos(M);
+    return{ra:ra(l,b),dec:dec(l,b),dist:dt};
   }
+  var J0=.0009;
+  function jc(d,lw){return Math.round(d-J0-lw/(2*PI));}
+  function aT(Ht,lw,n){return J0+(Ht+lw)/(2*PI)+n;}
+  function sTJ(ds,M,L){return J2000+ds+.0053*sin(M)-.0069*sin(2*L);}
+  function hA(h,phi,d){return acos((sin(h)-sin(phi)*sin(d))/(cos(phi)*cos(d)));}
+  function getSetJ(h,lw,phi,d2,n,M,L){var w=hA(h,phi,d2);if(isNaN(w))return NaN;return sTJ(aT(w,lw,n),M,L);}
+  function getTimes(date,lat,lng){
+    var lw=rad*-lng,phi=rad*lat,d=toDays(date),n=jc(d,lw),ds=aT(0,lw,n),M=sMA(ds),L=eLon(M),d2=dec(L,0),Jn=sTJ(ds,M,L);
+    var Js=getSetJ(rad*-.833,lw,phi,d2,n,M,L);
+    return{sunset:isNaN(Js)?null:fromJ(Js),sunrise:isNaN(Js)?null:fromJ(Jn-(Js-Jn))};
+  }
+  function getMoonIllumination(date){
+    var d=toDays(date||new Date()),s=sunC(d),m=moonC(d),sd=149598e3;
+    var phi=acos(sin(s.dec)*sin(m.dec)+cos(s.dec)*cos(m.dec)*cos(s.ra-m.ra));
+    var inc=atan(sd*sin(phi),m.dist-sd*cos(phi));
+    var angle=atan(cos(s.dec)*sin(s.ra-m.ra),sin(s.dec)*cos(m.dec)-cos(s.dec)*sin(m.dec)*cos(s.ra-m.ra));
+    return{fraction:(1+cos(inc))/2,phase:.5+.5*inc*(angle<0?-1:1)/PI};
+  }
+  function getMoonTimes(date,lat,lng){
+    var t=new Date(date);t.setHours(0,0,0,0);
+    var hc=.133*rad,h0=getMoonPosition(t,lat,lng).altitude-hc,rise,set,ye;
+    for(var i=1;i<=24;i++){
+      var h1=getMoonPosition(new Date(+t+i*18e5*2),lat,lng).altitude-hc;
+      var h2=getMoonPosition(new Date(+t+i*36e5),lat,lng).altitude-hc;
+      var a=(h0+h2)/2-h1,b=(h2-h0)/2,xe=-b/(2*a);ye=a*xe*xe+b*xe+h1;
+      var d2=b*b-4*a*h1,dx=Math.sqrt(Math.max(0,xe*xe-d2/(a*a*4)));
+      var x1=xe-dx,x2=xe+dx,r=0;
+      if(Math.abs(x1)<=1)r++;if(Math.abs(x2)<=1)r++;if(x1<-1)r--;
+      if(r===1){if(h0<0)rise=i+x1;else set=i+x1;}
+      else if(r===2){rise=i+(ye<0?x2:x1);set=i+(ye<0?x1:x2);}
+      if(rise&&set)break;h0=h2;
+    }
+    var res={};
+    if(rise)res.rise=new Date(+t+rise*36e5);
+    if(set)res.set=new Date(+t+set*36e5);
+    if(!rise&&!set)res[ye>0?'alwaysUp':'alwaysDown']=true;
+    return res;
+  }
+  function getMoonPosition(date,lat,lng){
+    var lw=rad*-lng,phi=rad*lat,d=toDays(date),c=moonC(d),H=sTime(d,lw)-c.ra;
+    var h=asin(sin(phi)*sin(c.dec)+cos(phi)*cos(c.dec)*cos(H));h+=aRef(h);
+    return{altitude:h,azimuth:atan(sin(H),cos(H)*sin(phi)-tan(c.dec)*cos(phi))};
+  }
+  return{getTimes,getMoonIllumination,getMoonTimes,getMoonPosition};
+})();
+// ===== نهاية SunCalc =====
 
-  return { age: ageHours, elong, phase, stay: stayStr };
+// === حسابات القمر — SunCalc للاستطالة والمكث، Meeus لعمر الهلال ===
+function toJD(y,m,d){if(m<=2){y--;m+=12;}var A=Math.floor(y/100),B=2-A+Math.floor(A/4);return Math.floor(365.25*(y+4716))+Math.floor(30.6001*(m+1))+d+B-1524.5;}
+function moonAgeFromJD(jd){var k0=(jd-2451550.09765)/29.530588853,k=Math.floor(k0),T=k/1236.85,JDE0=2451550.09765+29.530588853*k+0.0001337*T*T-0.00000015*T*T*T;return(jd-JDE0+29.530588853)%29.530588853;}
+function getMoonData(gDate, lat, lng){
+  var date = new Date(Date.UTC(gDate.y, gDate.m-1, gDate.d, 12, 0, 0));
+  // عمر الهلال من Meeus
+  var jd = toJD(gDate.y, gDate.m, gDate.d + 0.5);
+  var ageDays = moonAgeFromJD(jd);
+  var ageHours = Math.round(ageDays * 24);
+  // الاستطالة من SunCalc
+  var illum = SC.getMoonIllumination(date);
+  var mp = illum.phase;
+  var frac = illum.fraction;
+  var elongDeg = Math.acos(Math.max(-1,Math.min(1,1-2*frac)))*180/Math.PI;
+  var elong = elongDeg.toFixed(1);
+  var phase;
+  if(mp<.03||mp>.97)       phase='🌑 محاق';
+  else if(mp<.22)           phase='🌒 هلال متزايد';
+  else if(mp<.28)           phase='🌓 تربيع أول';
+  else if(mp<.47)           phase='🌔 أحدب متزايد';
+  else if(mp<.53)           phase='🌕 بدر';
+  else if(mp<.72)           phase='🌖 أحدب متناقص';
+  else if(mp<.78)           phase='🌗 تربيع أخير';
+  else                      phase='🌘 هلال متناقص';
+  var stayStr='—';
+  try{
+    var sunT=SC.getTimes(date,lat,lng);
+    var ss=sunT.sunset;
+    if(ss){
+      // ابحث عن غروب القمر بعد الغروب الشمسي مباشرة (فحص كل 30 دقيقة)
+      var prevAlt=SC.getMoonPosition(ss,lat,lng).altitude;
+      for(var step=1;step<=18;step++){
+        var t2=new Date(+ss+step*1800000);
+        var alt2=SC.getMoonPosition(t2,lat,lng).altitude;
+        if(prevAlt>0&&alt2<=0){
+          // غروب القمر بين t2-30دق وt2
+          var mset=new Date(+ss+(step-.5)*1800000);
+          var diff=Math.round((mset-ss)/60000);
+          if(diff>0&&diff<600){var h=Math.floor(diff/60),m=diff%60;stayStr=h>0?h+'س '+m+'د':m+'د';}
+          break;
+        }
+        prevAlt=alt2;
+      }
+    }
+  }catch(e){}
+  return{age:ageHours,elong,phase,stay:stayStr};
 }
 
 let _userLat = null, _userLng = null;
@@ -978,7 +1006,7 @@ async function fetchMoonData(gDate){
   const locLabel = loc ? `${lat.toFixed(2)}°, ${lng.toFixed(2)}°` : 'تبوك (افتراضي)';
   let moonInfo;
   try {
-    moonInfo = await getMoonData(gDate, lat, lng);
+    moonInfo = getMoonData(gDate, lat, lng);
   } catch(e) {
     box.innerHTML = `<div class="moon-err">تعذّر حساب بيانات القمر: ${e.message}</div>`;
     return;
@@ -986,10 +1014,11 @@ async function fetchMoonData(gDate){
   const { age, elong, phase, stay } = moonInfo;
 
   // شروط التحذير
-  const warnAge   = typeof age === 'number' ? age < 14 : parseInt(age) < 14;
-  const warnElong = elong !== '—' && parseFloat(elong) < 6.4;
+  // عمر الهلال < 15س 33د = 933 دقيقة = 15.55 ساعة
+  const warnAge   = typeof age === 'number' ? age < 15.55 : parseFloat(age) < 15.55;
+  const warnElong = elong !== '—' && parseFloat(elong) < 7.7;
   const stayMins  = (()=>{ if(!stay||stay==='—') return 999; const h=stay.match(/(\d+)س/); const m=stay.match(/(\d+)د/); return (h?parseInt(h[1])*60:0)+(m?parseInt(m[1]):0); })();
-  const warnStay  = stayMins < 20;
+  const warnStay  = stayMins < 29;
 
   box.innerHTML=`
     <div class="moon-card-hdr">
